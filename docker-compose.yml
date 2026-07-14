@@ -1,0 +1,48 @@
+# Legacy standalone API stack. Prefer the repo-root docker-compose.yml for full-stack runs.
+# Host port publishing is optional; set API_PUBLISH_PORT= (empty) behind nginx/sslh.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ${POSTGRES_CONTAINER_NAME:-exar-postgres}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-exar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-exar}
+      POSTGRES_DB: ${POSTGRES_DB:-exar}
+    volumes:
+      - exar-postgres-data:/var/lib/postgresql/data
+    networks:
+      - exar-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-exar} -d ${POSTGRES_DB:-exar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    image: ${API_IMAGE_TAG:-exar-api:latest}
+    container_name: ${API_CONTAINER_NAME:-exar}
+    expose:
+      - "8080"
+    ports:
+      - target: 8080
+        published: ${API_PUBLISH_PORT-8080}
+        protocol: tcp
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-exar}:${POSTGRES_PASSWORD:-exar}@postgres:5432/${POSTGRES_DB:-exar}?sslmode=disable
+      ADDR: ":8080"
+    networks:
+      - exar-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  exar-net:
+    name: ${DOCKER_NETWORK:-exar-net}
+    external: true
+
+volumes:
+  exar-postgres-data:

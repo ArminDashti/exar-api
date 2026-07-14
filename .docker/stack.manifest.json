@@ -1,0 +1,7 @@
+{
+  "stackName": "exar-api",
+  "containerName": "exar",
+  "internalPort": "8080",
+  "apiImageTag": "exar-api:latest",
+  "apiPublishPort": "8080"
+}
