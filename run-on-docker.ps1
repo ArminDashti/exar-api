@@ -251,10 +251,18 @@ function Get-StackImageTag {
     param([string]$ProjectRoot)
 
     $manifest = Get-StackManifest -ProjectRoot $ProjectRoot
-    if ($manifest -and $manifest.imageTag) {
+    if (-not $manifest) {
+        return 'exar-api:latest'
+    }
+
+    $properties = @($manifest.PSObject.Properties.Name)
+    if ($properties -contains 'apiImageTag' -and $manifest.apiImageTag) {
+        return [string]$manifest.apiImageTag
+    }
+    if ($properties -contains 'imageTag' -and $manifest.imageTag) {
         return [string]$manifest.imageTag
     }
-    return 'expenses-api:latest'
+    return 'exar-api:latest'
 }
 
 function Build-LocalDockerImage {
