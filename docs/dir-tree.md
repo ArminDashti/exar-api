@@ -5,7 +5,13 @@ exar-api/
 ├── db.md                      # PostgreSQL schema reference
 ├── Dockerfile                 # Go API image
 ├── docker-compose.yml         # postgres + API stack
-├── run-on-docker.ps1          # Local or SSH deploy script
+├── run-on-docker.ps1          # Legacy deploy script
+├── .armin/
+│   └── docker-scripts/
+│       ├── run-on-docker-local.ps1    # Local Docker deploy
+│       ├── run-on-docker-local.yaml   # Local deploy settings
+│       ├── run-on-docker-server.ps1   # Remote SSH deploy
+│       └── run-on-docker-server.yaml  # Remote deploy settings
 ├── .docker/
 │   └── stack.manifest.json    # apiImageTag, container names, ports
 ├── docs/

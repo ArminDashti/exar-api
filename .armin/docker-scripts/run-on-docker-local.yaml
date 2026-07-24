@@ -1,0 +1,11 @@
+# Local deploy settings — scripts read this file only (no CLI -- flags).
+# Non-empty override fields replace values from compose_file / dockerfile.
+
+stack_name: exar-api
+image_tag: exar-api:latest
+compose_file: ../../docker-compose.yml
+dockerfile: ../../Dockerfile
+docker_network: exar-net
+internal_port: ""
+delete_volume: "no"
+delete_image: "no"

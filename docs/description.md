@@ -6,7 +6,7 @@ Go REST API for the shared expense tracker. Users authenticate with JWT, manage 
 
 - Go 1.22, Gin, pgx
 - PostgreSQL 16
-- Docker Compose for local and remote deploy via `run-on-docker.ps1`
+- Docker Compose via `.armin/docker-scripts/` (local + SSH deploy)
 
 ## Run locally
 
@@ -20,11 +20,10 @@ Set `DATABASE_URL` if PostgreSQL is not at the default connection string.
 ## Run with Docker
 
 ```powershell
-.\run-on-docker.ps1
-docker compose up --build
+.\.armin\docker-scripts\run-on-docker-local.ps1
 ```
 
-API base URL: `http://localhost:8080/exar/api/v1`
+API on Docker network `exar-net` (`exar:8080`). Prefer [exar-web](../exar-web) as the HTTP front door.
 
 ## Related repo
 

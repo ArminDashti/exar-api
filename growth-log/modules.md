@@ -8,4 +8,4 @@
 | `internal/handlers` | Gin route handlers |
 | `internal/jalali` | Persian calendar conversion |
 | `internal/models` | Domain types |
-| Docker | `Dockerfile` + compose + `run-on-docker.ps1` |
+| Docker | `Dockerfile` + compose + `.armin/docker-scripts/` |
