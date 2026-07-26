@@ -41,3 +41,6 @@ desktop.ini
 
 # Deploy scratch
 .deploy/
+
+# --- auto: github-commit-push-all-repos ---
+# --- end auto ---
