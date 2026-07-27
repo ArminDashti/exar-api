@@ -22,7 +22,7 @@
 
   This script sets env vars expected by your `docker-compose.yml`:
     - API_IMAGE_TAG
-    - API_PUBLISH_PORT   (empty = no host bind; reach via exar-net / exar-web)
+    - API_PUBLISH_PORT   (from publish_port; empty = no host bind)
     - DOCKER_NETWORK
 #>
 
@@ -66,8 +66,8 @@ CONFIG:
 
 NOTES:
   - No CLI -- flags. Edit run-on-docker-local.yaml instead.
-  - Sets API_IMAGE_TAG, API_PUBLISH_PORT (empty), and DOCKER_NETWORK for compose.
-  - Host publish is left empty so port 8080 can stay free; use exar-web or the Docker network.
+  - Sets API_IMAGE_TAG, API_PUBLISH_PORT, and DOCKER_NETWORK for compose.
+  - publish_port from YAML binds the API on the host (empty = network-only).
 "@ -ForegroundColor Cyan
 }
 
@@ -94,6 +94,15 @@ function Read-FlatYaml([string]$Path) {
         if ($line -notmatch '^(?<key>[^:#]+):\s*(?<val>.*)$') { continue }
         $key = $Matches['key'].Trim()
         $val = $Matches['val'].Trim()
+        # Strip unquoted inline comments (e.g. value  # note)
+        if ($val -match '^(?<q>["'']).*?\k<q>(?<rest>\s+#.*)?$') {
+            if ($Matches['rest']) {
+                $val = $val.Substring(0, $val.Length - $Matches['rest'].Length).Trim()
+            }
+        }
+        elseif ($val -match '^(?<body>.*?)\s+#') {
+            $val = $Matches['body'].Trim()
+        }
         if (($val.StartsWith('"') -and $val.EndsWith('"')) -or ($val.StartsWith("'") -and $val.EndsWith("'"))) {
             $val = $val.Substring(1, $val.Length - 2)
         }
@@ -156,6 +165,7 @@ try {
     $network = Require-Key $cfg 'docker_network'
 
     $internalPort = if ($cfg.ContainsKey('internal_port')) { [string]$cfg['internal_port'] } else { '' }
+    $publishPort = if ($cfg.ContainsKey('publish_port')) { [string]$cfg['publish_port'] } else { '' }
     $deleteVolume = Test-Truthy ($(if ($cfg.ContainsKey('delete_volume')) { [string]$cfg['delete_volume'] } else { 'no' }))
     $deleteImage = Test-Truthy ($(if ($cfg.ContainsKey('delete_image')) { [string]$cfg['delete_image'] } else { 'no' }))
 
@@ -167,10 +177,7 @@ try {
     $composePath = Resolve-DeployPath $composeFileRel
     $dockerfile = Resolve-DeployPath $dockerfileRel
 
-    Write-Step "Stack=$stackName image=$imageTag network=$network delete_volume=$deleteVolume delete_image=$deleteImage"
-    if (-not [string]::IsNullOrWhiteSpace($internalPort)) {
-        Write-Step "internal_port provided but unused by this repo's docker-compose.yml: $internalPort"
-    }
+    Write-Step "Stack=$stackName image=$imageTag network=$network publish_port='$publishPort' internal_port='$internalPort' delete_volume=$deleteVolume delete_image=$deleteImage"
 
     Ensure-Docker
     Ensure-Network $network
@@ -199,8 +206,7 @@ try {
     $oldApiPublishPort = $env:API_PUBLISH_PORT
     $oldDockerNetwork = $env:DOCKER_NETWORK
     $env:API_IMAGE_TAG = $imageTag
-    # Empty publish avoids fighting other stacks on host :8080; API stays on exar-net.
-    $env:API_PUBLISH_PORT = ''
+    $env:API_PUBLISH_PORT = $publishPort
     $env:DOCKER_NETWORK = $network
     try {
         docker compose -p $stackName -f $composePath --project-directory $RepoRoot up -d --force-recreate
@@ -213,7 +219,12 @@ try {
     }
 
     Write-Ok 'Deploy complete'
-    Write-Host "API on Docker network exar-net (container exar:8080). Via exar-web if running." -ForegroundColor Green
+    if ([string]::IsNullOrWhiteSpace($publishPort)) {
+        Write-Host "API on Docker network $network (container listen :8080)." -ForegroundColor Green
+    }
+    else {
+        Write-Host "API published at http://localhost:$publishPort (container :8080)." -ForegroundColor Green
+    }
 }
 catch {
     Write-Fail $_.Exception.Message

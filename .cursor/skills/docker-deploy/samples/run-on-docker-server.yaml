@@ -11,7 +11,8 @@ docker_network: myapp-net
 internal_port: ""
 delete_volume: "no"
 delete_image: "no"
-build_image_on: "local"  # local = build here and upload; server = build on remote
+# local = build here and upload; server = build on remote
+build_image_on: "local"
 
 ssh: "ssh <alias>"
 

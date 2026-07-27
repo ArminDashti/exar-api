@@ -1,18 +1,18 @@
 # Remote deploy settings — scripts read this file only (no CLI -- flags).
 # Non-empty override fields replace values from compose_file / dockerfile.
-# Fill ssh with a real value before running; leave placeholder until then.
 
 stack_name: exar-api
 image_tag: exar-api:latest
 compose_file: ../../docker-compose.yml
 dockerfile: ../../Dockerfile
 docker_network: exar-net
-internal_port: ""
+internal_port: "8080"
 publish_port: ""
 delete_volume: "no"
-delete_image: "no"
-build_image_on: "local"  # local = build here and upload; server = build on remote
+delete_image: "yes"
+# local = build here and upload; server = build on remote
+build_image_on: "local"
 
-ssh: "ssh <alias>"
+ssh: "ssh t3 -p 80"
 
-volume_dir: "/home/<user>/docker/exar-api"
+volume_dir: "/home/cloud-admin/docker/exar-api"
