@@ -13,6 +13,6 @@ delete_image: "yes"
 # local = build here and upload; server = build on remote
 build_image_on: "local"
 
-ssh: "ssh t3 -p 80"
+ssh: "ssh t3"
 
 volume_dir: "/home/cloud-admin/docker/exar-api"

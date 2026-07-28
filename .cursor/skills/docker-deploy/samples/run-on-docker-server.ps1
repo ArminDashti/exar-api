@@ -3,7 +3,7 @@
   Deploy stack to a remote host over SSH using sibling YAML only.
 
 .DESCRIPTION
-  Remote deploy script for .armin/docker-scripts/run-on-docker-server.yaml.
+  Sample for .armin/docker-scripts/run-on-docker-server.ps1.
   Reads run-on-docker-server.yaml — no CLI -- flags.
   Flow when build_image_on is local: build locally → docker save → SCP → remote docker load → sync files → remote compose up -d.
   Flow when build_image_on is server: sync repo to remote → remote docker build → remote compose up -d.
@@ -12,7 +12,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $DeployDir = $PSScriptRoot
-$RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $DeployDir '../..'))
+$RepoRoot = (Resolve-Path (Join-Path $DeployDir '../..')).Path
 $ConfigPath = Join-Path $DeployDir 'run-on-docker-server.yaml'
 
 function Write-Step([string]$Message) {
@@ -47,13 +47,13 @@ CONFIG:
   delete_volume       yes/true/1/y/on → remove volumes before up
   delete_image        yes/true/1/y/on → remove image during teardown
   build_image_on      local = build here and upload; server = build on remote
-  ssh                 "ssh <alias>", "ssh <alias> -p <port>", "ssh -p <port> <alias>", or "host@user@password"
+  ssh                 "ssh <alias>" or "host@user@password"
   volume_dir          Absolute remote directory for project + compose files
 
 NOTES:
   - No CLI -- flags. Change behavior only via YAML.
-  - Sets API_IMAGE_TAG / API_PUBLISH_PORT / DOCKER_NETWORK for this repo's compose.
-  - Alias mode uses ~/.ssh/config (no ssh_key field); optional -p overrides Port.
+  - Non-empty override fields replace compose / Dockerfile values via env vars.
+  - Alias mode uses ~/.ssh/config (no ssh_key field).
   - Rejects placeholder ssh values at runtime.
   - Never prints the password segment of host@user@password.
   - build_image_on=local requires Docker on this machine.
@@ -83,16 +83,6 @@ function Read-FlatYaml([string]$Path) {
         if ($line -notmatch '^(?<key>[^:#]+):\s*(?<val>.*)$') { continue }
         $key = $Matches['key'].Trim()
         $val = $Matches['val'].Trim()
-        # Strip unquoted inline comments (e.g. value  # note)
-        if ($val -match '^(?<q>["'']).*?\k<q>(?<rest>\s+#.*)?$') {
-            # quoted value — keep as-is through quote strip below; drop trailing comment if present
-            if ($Matches['rest']) {
-                $val = $val.Substring(0, $val.Length - $Matches['rest'].Length).Trim()
-            }
-        }
-        elseif ($val -match '^(?<body>.*?)\s+#') {
-            $val = $Matches['body'].Trim()
-        }
         if (($val.StartsWith('"') -and $val.EndsWith('"')) -or ($val.StartsWith("'") -and $val.EndsWith("'"))) {
             $val = $val.Substring(1, $val.Length - 2)
         }
@@ -125,12 +115,11 @@ function Get-RepoRelativePath([string]$AbsolutePath) {
 
 function Build-ComposeEnvPrefix([hashtable]$Cfg, [string]$PublishPort) {
     $pairs = New-Object System.Collections.Generic.List[string]
-    # Always set so empty publish_port clears compose default (${API_PUBLISH_PORT-8080}).
     $escapedPublish = $PublishPort.Replace("'", "'\\''")
-    [void]$pairs.Add("API_PUBLISH_PORT='$escapedPublish'")
+    [void]$pairs.Add("PUBLISH_PORT='$escapedPublish'")
 
     $mapping = @{
-        image_tag       = 'API_IMAGE_TAG'
+        image_tag       = 'IMAGE_TAG'
         docker_network  = 'DOCKER_NETWORK'
         internal_port   = 'INTERNAL_PORT'
     }
@@ -151,18 +140,12 @@ function Ensure-Docker {
 
 function Parse-SshTarget([string]$SshValue) {
     $value = $SshValue.Trim()
-    # ssh [-p PORT] <alias> [-p PORT]
-    if ($value -match '^(?i)ssh(?:\s+-p\s*(?<port1>\d+))?\s+(?<alias>\S+)(?:\s+-p\s*(?<port2>\d+))?$') {
+    if ($value -match '^(?i)ssh\s+(?<alias>\S+)$') {
         $alias = $Matches['alias']
-        $port = $null
-        if ($Matches['port1']) { $port = $Matches['port1'] }
-        if ($Matches['port2']) { $port = $Matches['port2'] }
-        $logTarget = if ($port) { "ssh $alias -p $port" } else { "ssh $alias" }
         return @{
             Mode      = 'alias'
             Alias     = $alias
-            Port      = $port
-            LogTarget = $logTarget
+            LogTarget = "ssh $alias"
         }
     }
 
@@ -179,22 +162,18 @@ function Parse-SshTarget([string]$SshValue) {
             Host      = $hostName
             User      = $userName
             Password  = $password
-            Port      = $null
             LogTarget = "$userName@$hostName"
         }
     }
 
-    throw 'ssh must be "ssh <alias>", "ssh <alias> -p <port>", "ssh -p <port> <alias>", or "host@user@password".'
+    throw 'ssh must be "ssh <alias>" or "host@user@password".'
 }
 
 function Invoke-Remote {
     param($Target, [string]$RemoteCommand)
 
     if ($Target.Mode -eq 'alias') {
-        $sshArgs = @('-o', 'BatchMode=yes')
-        if ($Target.Port) { $sshArgs += @('-p', $Target.Port) }
-        $sshArgs += @($Target.Alias, $RemoteCommand)
-        & ssh @sshArgs
+        & ssh -o BatchMode=yes $Target.Alias $RemoteCommand
         if ($LASTEXITCODE -ne 0) { throw "Remote command failed on $($Target.LogTarget)" }
         return
     }
@@ -216,10 +195,7 @@ function Copy-ToRemote {
     param($Target, [string]$LocalPath, [string]$RemotePath)
 
     if ($Target.Mode -eq 'alias') {
-        $scpArgs = @('-o', 'BatchMode=yes')
-        if ($Target.Port) { $scpArgs += @('-P', $Target.Port) }
-        $scpArgs += @($LocalPath, "$($Target.Alias):$RemotePath")
-        & scp @scpArgs
+        & scp -o BatchMode=yes $LocalPath "$($Target.Alias):$RemotePath"
         if ($LASTEXITCODE -ne 0) { throw "SCP failed to $($Target.LogTarget):$RemotePath" }
         return
     }
@@ -241,10 +217,7 @@ function Copy-DirToRemote {
     param($Target, [string]$LocalDir, [string]$RemoteDir)
 
     if ($Target.Mode -eq 'alias') {
-        $scpArgs = @('-r', '-o', 'BatchMode=yes')
-        if ($Target.Port) { $scpArgs += @('-P', $Target.Port) }
-        $scpArgs += @("$LocalDir/.", "$($Target.Alias):$RemoteDir/")
-        & scp @scpArgs
+        & scp -r -o BatchMode=yes "$LocalDir/." "$($Target.Alias):$RemoteDir/"
         if ($LASTEXITCODE -ne 0) { throw "SCP directory failed to $($Target.LogTarget):$RemoteDir" }
         return
     }
