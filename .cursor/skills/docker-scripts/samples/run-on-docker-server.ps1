@@ -283,12 +283,42 @@ try {
     Write-Step "Ensuring remote volume dir $volumeDir"
     Invoke-Remote -Target $target -RemoteCommand "mkdir -p '$volumeDir'"
 
+    # Sync compose/config before teardown so `compose down` has a file to read.
+    # Full repo sync (server build) or compose+yaml only (local build).
     if ($buildImageOn -eq 'server') {
         Write-Step "Syncing repo to $volumeDir for remote build"
         Copy-DirToRemote -Target $target -LocalDir $RepoRoot -RemoteDir $volumeDir
         Write-Ok 'Repo synced to remote'
     }
     else {
+        $syncItems = @(
+            $composeFileName
+            'run-on-docker-server.yaml'
+        )
+        foreach ($item in $syncItems) {
+            $localItem = if ($item -eq $composeFileName) { $composePath } else { Join-Path $DeployDir $item }
+            if (-not (Test-Path -LiteralPath $localItem)) { throw "Sync source not found: $localItem" }
+            $remoteItem = "$volumeDir/$item"
+            Write-Step "Sync $item"
+            Copy-ToRemote -Target $target -LocalPath $localItem -RemotePath $remoteItem
+        }
+    }
+
+    # Teardown BEFORE loading/building the new image so delete_image does not
+    # wipe the image we just uploaded (local) or are about to build (server).
+    $downFlags = if ($deleteVolume) { '-v' } else { '' }
+
+    if ($deleteVolume -or $deleteImage) {
+        Write-Step 'Remote compose down'
+        Invoke-Remote -Target $target -RemoteCommand "docker compose -p '$stackName' -f '$remoteCompose' --project-directory '$volumeDir' down $downFlags || true"
+    }
+
+    if ($deleteImage) {
+        Write-Step "Removing remote image $imageTag"
+        Invoke-Remote -Target $target -RemoteCommand "docker image rm -f '$imageTag' || true"
+    }
+
+    if ($buildImageOn -eq 'local') {
         Write-Step "Building $imageTag locally (dockerfile=$dockerfile context=$RepoRoot)"
         docker build -f $dockerfile -t $imageTag $RepoRoot
         if ($LASTEXITCODE -ne 0) { throw 'docker build failed' }
@@ -306,33 +336,8 @@ try {
         Invoke-Remote -Target $target -RemoteCommand "docker load -i $remoteTar && rm -f $remoteTar"
         Write-Ok 'Image loaded on remote'
         Remove-Item -LiteralPath $tarPath -Force -ErrorAction SilentlyContinue
-
-        $syncItems = @(
-            $composeFileName
-            'run-on-docker-server.yaml'
-        )
-        foreach ($item in $syncItems) {
-            $localItem = if ($item -eq $composeFileName) { $composePath } else { Join-Path $DeployDir $item }
-            if (-not (Test-Path -LiteralPath $localItem)) { throw "Sync source not found: $localItem" }
-            $remoteItem = "$volumeDir/$item"
-            Write-Step "Sync $item"
-            Copy-ToRemote -Target $target -LocalPath $localItem -RemotePath $remoteItem
-        }
     }
-
-    $downFlags = if ($deleteVolume) { '-v' } else { '' }
-
-    if ($deleteVolume -or $deleteImage) {
-        Write-Step 'Remote compose down'
-        Invoke-Remote -Target $target -RemoteCommand "docker compose -p '$stackName' -f '$remoteCompose' --project-directory '$volumeDir' down $downFlags"
-    }
-
-    if ($deleteImage) {
-        Write-Step "Removing remote image $imageTag"
-        Invoke-Remote -Target $target -RemoteCommand "docker image rm -f '$imageTag' || true"
-    }
-
-    if ($buildImageOn -eq 'server') {
+    else {
         Write-Step "Building $imageTag on remote (dockerfile=$remoteDockerfile context=$volumeDir)"
         Invoke-Remote -Target $target -RemoteCommand "docker build -f '$volumeDir/$remoteDockerfile' -t '$imageTag' '$volumeDir'"
         Write-Ok "Built $imageTag on remote"
@@ -347,8 +352,11 @@ try {
         internal_port  = $internalPort
     } $publishPort
 
+    # Local builds ship a preloaded image; forbid remote rebuild (no Dockerfile synced).
+    $upExtra = if ($buildImageOn -eq 'local') { ' --no-build' } else { '' }
+
     Write-Step 'Remote compose up -d'
-    Invoke-Remote -Target $target -RemoteCommand "${envPrefix}docker compose -p '$stackName' -f '$remoteCompose' --project-directory '$volumeDir' up -d"
+    Invoke-Remote -Target $target -RemoteCommand "${envPrefix}docker compose -p '$stackName' -f '$remoteCompose' --project-directory '$volumeDir' up -d$upExtra"
     Write-Ok "Stack deployed at $volumeDir on $($target.LogTarget)"
 }
 catch {
