@@ -52,7 +52,7 @@ CONFIG:
 
 NOTES:
   - No CLI -- flags. Change behavior only via YAML.
-  - Sets API_IMAGE_TAG / API_PUBLISH_PORT / DOCKER_NETWORK for this repo's compose.
+  - Sets IMAGE_TAG / DOCKER_NETWORK / INTERNAL_PORT / PUBLISH_PORT for compose.
   - Alias mode uses ~/.ssh/config (no ssh_key field); optional -p overrides Port.
   - Rejects placeholder ssh values at runtime.
   - Never prints the password segment of host@user@password.
@@ -83,9 +83,7 @@ function Read-FlatYaml([string]$Path) {
         if ($line -notmatch '^(?<key>[^:#]+):\s*(?<val>.*)$') { continue }
         $key = $Matches['key'].Trim()
         $val = $Matches['val'].Trim()
-        # Strip unquoted inline comments (e.g. value  # note)
         if ($val -match '^(?<q>["'']).*?\k<q>(?<rest>\s+#.*)?$') {
-            # quoted value — keep as-is through quote strip below; drop trailing comment if present
             if ($Matches['rest']) {
                 $val = $val.Substring(0, $val.Length - $Matches['rest'].Length).Trim()
             }
@@ -125,14 +123,11 @@ function Get-RepoRelativePath([string]$AbsolutePath) {
 
 function Build-ComposeEnvPrefix([hashtable]$Cfg, [string]$PublishPort) {
     $pairs = New-Object System.Collections.Generic.List[string]
-    # Always set so empty publish_port clears compose default (${API_PUBLISH_PORT-8080}).
-    $escapedPublish = $PublishPort.Replace("'", "'\\''")
-    [void]$pairs.Add("API_PUBLISH_PORT='$escapedPublish'")
 
     $mapping = @{
-        image_tag       = 'API_IMAGE_TAG'
-        docker_network  = 'DOCKER_NETWORK'
-        internal_port   = 'INTERNAL_PORT'
+        image_tag      = 'IMAGE_TAG'
+        docker_network = 'DOCKER_NETWORK'
+        internal_port  = 'INTERNAL_PORT'
     }
     foreach ($entry in $mapping.GetEnumerator()) {
         if (-not $Cfg.ContainsKey($entry.Key)) { continue }
@@ -140,6 +135,10 @@ function Build-ComposeEnvPrefix([hashtable]$Cfg, [string]$PublishPort) {
         if ([string]::IsNullOrWhiteSpace($value)) { continue }
         $escaped = $value.Replace("'", "'\\''")
         [void]$pairs.Add("$($entry.Value)='$escaped'")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PublishPort)) {
+        $escapedPublish = $PublishPort.Replace("'", "'\\''")
+        [void]$pairs.Add("PUBLISH_PORT='$escapedPublish'")
     }
     return ($pairs -join ' ') + ' '
 }
@@ -151,7 +150,6 @@ function Ensure-Docker {
 
 function Parse-SshTarget([string]$SshValue) {
     $value = $SshValue.Trim()
-    # ssh [-p PORT] <alias> [-p PORT]
     if ($value -match '^(?i)ssh(?:\s+-p\s*(?<port1>\d+))?\s+(?<alias>\S+)(?:\s+-p\s*(?<port2>\d+))?$') {
         $alias = $Matches['alias']
         $port = $null
@@ -300,8 +298,19 @@ try {
     $composePath = Resolve-DeployPath $composeFileRel
     $dockerfile = Resolve-DeployPath $dockerfileRel
     $composeFileName = Split-Path -Leaf $composePath
+    $publishComposeName = 'docker-compose.publish.yml'
+    $publishComposePath = Join-Path $RepoRoot $publishComposeName
+    $usePublishOverlay = -not [string]::IsNullOrWhiteSpace($publishPort)
+    if ($usePublishOverlay -and -not (Test-Path -LiteralPath $publishComposePath)) {
+        throw "publish_port is set but overlay missing: $publishComposePath"
+    }
     $remoteDockerfile = Get-RepoRelativePath $dockerfile
     $remoteCompose = "$volumeDir/$composeFileName"
+    $remotePublishCompose = "$volumeDir/$publishComposeName"
+    $remoteComposeFileArgs = "-f '$remoteCompose'"
+    if ($usePublishOverlay) {
+        $remoteComposeFileArgs = "$remoteComposeFileArgs -f '$remotePublishCompose'"
+    }
 
     $target = Parse-SshTarget -SshValue $sshValue
     Write-Step "Remote target: $($target.LogTarget)"
@@ -311,19 +320,28 @@ try {
     Invoke-Remote -Target $target -RemoteCommand "mkdir -p '$volumeDir'"
 
     # Sync compose/config before teardown so `compose down` has a file to read.
-    # Full repo sync (server build) or compose+yaml only (local build).
     if ($buildImageOn -eq 'server') {
         Write-Step "Syncing repo to $volumeDir for remote build"
         Copy-DirToRemote -Target $target -LocalDir $RepoRoot -RemoteDir $volumeDir
         Write-Ok 'Repo synced to remote'
     }
     else {
-        $syncItems = @(
-            $composeFileName
-            'run-on-docker-server.yaml'
-        )
+        $syncItems = New-Object System.Collections.Generic.List[string]
+        [void]$syncItems.Add($composeFileName)
+        if ($usePublishOverlay -or (Test-Path -LiteralPath $publishComposePath)) {
+            [void]$syncItems.Add($publishComposeName)
+        }
+        [void]$syncItems.Add('run-on-docker-server.yaml')
         foreach ($item in $syncItems) {
-            $localItem = if ($item -eq $composeFileName) { $composePath } else { Join-Path $DeployDir $item }
+            $localItem = if ($item -eq $composeFileName) {
+                $composePath
+            }
+            elseif ($item -eq $publishComposeName) {
+                $publishComposePath
+            }
+            else {
+                Join-Path $DeployDir $item
+            }
             if (-not (Test-Path -LiteralPath $localItem)) { throw "Sync source not found: $localItem" }
             $remoteItem = "$volumeDir/$item"
             Write-Step "Sync $item"
@@ -335,9 +353,15 @@ try {
     # wipe the image we just uploaded (local) or are about to build (server).
     $downFlags = if ($deleteVolume) { '-v' } else { '' }
 
+    # Prefer both compose files on down when overlay exists remotely (avoids orphan publish bindings).
+    $remoteDownFileArgs = "-f '$remoteCompose'"
+    if (Test-Path -LiteralPath $publishComposePath) {
+        $remoteDownFileArgs = "$remoteDownFileArgs -f '$remotePublishCompose'"
+    }
+
     if ($deleteVolume -or $deleteImage) {
         Write-Step 'Remote compose down'
-        Invoke-Remote -Target $target -RemoteCommand "docker compose -p '$stackName' -f '$remoteCompose' --project-directory '$volumeDir' down $downFlags || true"
+        Invoke-Remote -Target $target -RemoteCommand "docker compose -p '$stackName' $remoteDownFileArgs --project-directory '$volumeDir' down $downFlags || true"
     }
 
     if ($deleteImage) {
@@ -383,7 +407,7 @@ try {
     $upExtra = if ($buildImageOn -eq 'local') { ' --no-build' } else { '' }
 
     Write-Step 'Remote compose up -d'
-    Invoke-Remote -Target $target -RemoteCommand "${envPrefix}docker compose -p '$stackName' -f '$remoteCompose' --project-directory '$volumeDir' up -d$upExtra"
+    Invoke-Remote -Target $target -RemoteCommand "${envPrefix}docker compose -p '$stackName' $remoteComposeFileArgs --project-directory '$volumeDir' up -d$upExtra"
     Write-Ok "Stack deployed at $volumeDir on $($target.LogTarget)"
 }
 catch {

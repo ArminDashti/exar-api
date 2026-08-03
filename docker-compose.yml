@@ -1,5 +1,5 @@
-# Legacy standalone API stack. Prefer the repo-root docker-compose.yml for full-stack runs.
-# Host port publishing is optional; set API_PUBLISH_PORT= (empty) behind nginx/sslh.
+# Standalone API stack. Scripts under .armin/docker-scripts/ drive IMAGE_TAG / ports.
+# Host publish is optional: when publish_port is set, scripts also load docker-compose.publish.yml.
 services:
   postgres:
     image: postgres:16-alpine
@@ -20,18 +20,16 @@ services:
       retries: 5
 
   api:
-    build: .
-    image: ${API_IMAGE_TAG:-exar-api:latest}
+    build:
+      context: .
+      dockerfile: dockerfile
+    image: ${IMAGE_TAG:-exar-api:latest}
     container_name: ${API_CONTAINER_NAME:-exar}
     expose:
-      - "8080"
-    ports:
-      - target: 8080
-        published: ${API_PUBLISH_PORT-8080}
-        protocol: tcp
+      - "${INTERNAL_PORT:-8080}"
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-exar}:${POSTGRES_PASSWORD:-exar}@postgres:5432/${POSTGRES_DB:-exar}?sslmode=disable
-      ADDR: ":8080"
+      ADDR: ":${INTERNAL_PORT:-8080}"
     networks:
       - exar-net
     depends_on:
